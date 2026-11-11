@@ -9,7 +9,6 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python app.py
 ```
-
 Open <http://127.0.0.1:8000>. The app binds to localhost by default. Its SQLite database and retained statement PDFs live in `data/`; keep that folder backed up. Do not expose this development server directly to the public internet.
 
 For HSBC extraction, the machine needs Node.js, the `tesseract.js` Node dependency, and Poppler's `pdftoppm` command. The app detects the Codex desktop runtime automatically when available. The English OCR model is included under `vendor/tessdata/`; OCR runs locally and the PDF is not sent to a service. On a separate machine, install the Node dependency with `npm install` and install Poppler using that operating system's package manager.
@@ -67,6 +66,8 @@ WebAuthn passkeys are scoped to the exact public HTTPS origin and relying-party 
 Before the first production deployment, run `migrate_hosted.py` locally with the Supabase/Vercel values in your process environment. It creates the tables, uploads existing PDFs to the private bucket, imports the structured transaction history, creates the first admin account, and checks the uploaded PDFs. It refuses to run if the hosted database already contains ledger data. Deploy with `vercel deploy --prod` after migration. `Dockerfile.vercel` builds the application as a Vercel container function, and `vercel.json` schedules an encrypted database + PDF backup once per day. Admins can also create and download backups from Settings. To restore a hosted backup, install `postgresql-client`, set the database and Supabase environment variables plus the backup key, then run `python hosted_backup.py restore <backup-file>` and confirm the prompt.
 
 The Vercel Hobby and Supabase Free tiers include usage allowances, but Supabase Free projects can pause after a week without activity and do not include automatic database backups. The daily Vercel backup schedule keeps the project active and provides an encrypted recovery copy; check both providers' usage dashboards as your PDF archive grows.
+
+This repository is connected to the Household Ledger Vercel project. Pushes to `main` trigger production deployments. Keep household records, statement PDFs, and secrets out of source control.
 
 ## Private hosting preparation
 
