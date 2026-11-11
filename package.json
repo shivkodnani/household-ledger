@@ -1,0 +1,8 @@
+{
+  "name": "household-ledger-local-ocr",
+  "private": true,
+  "description": "Local OCR dependency for HSBC PDF extraction",
+  "dependencies": {
+    "tesseract.js": "^7.0.0"
+  }
+}

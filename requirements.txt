@@ -1,0 +1,4 @@
+cryptography>=41
+Pillow>=10.4
+psycopg[binary,pool]>=3.2
+webauthn==2.7.1

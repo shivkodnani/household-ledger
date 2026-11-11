@@ -1,0 +1,17 @@
+__pycache__/
+.venv/
+node_modules/
+*.py[cod]
+
+# Private household records and local artifacts
+data/
+work/
+outputs/
+
+# Keep credentials out of source control, but include the blank template.
+.env
+.env.*
+!.env.example
+
+# Local Vercel linkage
+.vercel/

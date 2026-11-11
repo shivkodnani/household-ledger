@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f7f8fa"><title>Sign in · Household Ledger</title><script src="/theme.js"></script>
+  <link rel="stylesheet" href="/login.css">
+</head>
+<body>
+  <button type="button" class="login-theme-toggle" id="login-theme-toggle" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode" aria-pressed="false"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/icons.svg#moon"></use></svg></button>
+  <main class="login-shell">
+    <section class="login-card" aria-labelledby="login-title">
+      <div class="brand-mark">h</div>
+      <div class="eyebrow">PRIVATE HOUSEHOLD WORKSPACE</div>
+      <h1 id="login-title">Sign in</h1>
+      <p>Use your household ledger account to continue.</p>
+      <form id="login-form">
+        <label>Email address<input name="email" type="email" autocomplete="username" required autofocus></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+        <div id="login-error" role="alert" hidden></div>
+        <button id="login-submit" type="submit">Sign in</button>
+      </form>
+      <div class="login-divider"><span>or</span></div>
+      <button id="passkey-login" class="passkey-login" type="button" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="/icons.svg#key-round"></use></svg><span aria-live="polite">Sign in with a passkey</span></button>
+      <p class="passkey-login-note">Passkeys use Face ID, Touch ID, or your device’s screen lock.</p>
+      <small>Your statement records stay in your private ledger workspace.</small>
+    </section>
+  </main>
+  <script src="/login.js"></script>
+</body>
+</html>
