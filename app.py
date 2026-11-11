@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import json, sqlite3, uuid, datetime, mimetypes, os, re, shutil, tempfile
 import subprocess, hashlib, hmac, secrets, base64, ipaddress, threading, time
+from difflib import SequenceMatcher
 from http.cookies import SimpleCookie
 from concurrent.futures import ThreadPoolExecutor
 from hsbc_parser import extract_hsbc_pdf, _runtime_paths
@@ -212,34 +213,123 @@ def init_db(seed_merchants=True, bootstrap_admin=True):
             c.execute("INSERT INTO users(id,email,display_name,password_hash,role,active,created_at) VALUES(?,?,?,?,?,?,?)",
                       (user_id,email,os.environ.get("LEDGER_BOOTSTRAP_ADMIN_NAME", "Household admin")[:80],password_hash(password),"admin",1,utc_now().isoformat(timespec="seconds")))
 
-def queue_unknown_merchants():
-    """Create reviewable alias suggestions for unmatched purchase/refund rows."""
+def _merchant_names(merchant):
+    try: aliases = json.loads(merchant["aliases"] or "[]")
+    except (TypeError, ValueError): aliases = []
+    return [name for name in [merchant["display_name"], merchant["legal_name"] or "", *aliases] if name]
+
+MATCH_GENERIC_WORDS = {"COM","WWW","HTTP","HTTPS","THE","AND","INDIA","PRIVATE","PVT","LTD","LIMITED","ONLINE","OFFICIAL","WEB","APP","SERVICE","SERVICES","COMPANY","GROUP"}
+
+def _merchant_match_score(alias, known_name):
+    """Conservative similarity score used to suggest, never silently apply, near matches."""
+    alias_key, known_key = merchant_alias_key(alias), merchant_alias_key(known_name)
+    if not alias_key or not known_key: return 0.0
+    if alias_key == known_key: return 1.0
+    score = SequenceMatcher(None, alias_key, known_key).ratio()
+    shorter, longer = sorted((alias_key, known_key), key=len)
+    if len(shorter) >= 4 and shorter in longer:
+        score = max(score, .72 + .18 * (len(shorter) / len(longer)))
+    alias_tokens = {merchant_alias_key(word) for word in re.findall(r"[A-Z0-9]+", alias.upper()) if len(word) >= 3 and word not in MATCH_GENERIC_WORDS}
+    known_tokens = {merchant_alias_key(word) for word in re.findall(r"[A-Z0-9]+", known_name.upper()) if len(word) >= 3 and word not in MATCH_GENERIC_WORDS}
+    if alias_tokens and known_tokens:
+        overlap = len(alias_tokens & known_tokens) / min(len(alias_tokens), len(known_tokens))
+        if overlap:
+            score = max(score, .72 + .23 * overlap)
+    return min(score, .99)
+
+def _classify_merchant_alias(alias, merchants):
+    """Return an exact merchant or close candidates; only unmatched names are web searched."""
+    key = merchant_alias_key(alias)
+    if not key: return None, []
+    for merchant in merchants:
+        if any(merchant_alias_key(name) == key for name in _merchant_names(merchant)):
+            return merchant, []
+    candidates = []
+    for merchant in merchants:
+        score = max((_merchant_match_score(alias, name) for name in _merchant_names(merchant)), default=0.0)
+        if score >= .78:
+            candidates.append({"type":"existing_merchant", "merchant_id":merchant["id"],
+                               "title":merchant["display_name"], "description":"Possible existing merchant",
+                               "url":"", "match_score":round(score, 3),
+                               "suggested_brand_name":merchant["display_name"],
+                               "suggested_legal_name":merchant["legal_name"] or ""})
+    candidates.sort(key=lambda item: item["match_score"], reverse=True)
+    return None, candidates[:3]
+
+def queue_unknown_merchants(statement_id=None, auto_search=False):
+    """Classify statement aliases after extraction, keeping every uncertain result reviewable."""
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    search_ids = []
     with connect() as c:
-        rows = c.execute("""SELECT t.description,t.statement_id FROM transactions t
-                            WHERE t.merchant_id IS NULL AND t.kind IN ('Purchase','Refund')""").fetchall()
-        grouped = {}
+        merchants = c.execute("SELECT id,display_name,legal_name,aliases FROM merchants ORDER BY display_name").fetchall()
+        rows = c.execute("""SELECT t.id,t.description,t.statement_id FROM transactions t
+                            WHERE t.merchant_id IS NULL AND t.kind IN ('Purchase','Refund')""" +
+                         (" AND t.statement_id=?" if statement_id else ""),
+                         (statement_id,) if statement_id else ()).fetchall()
+        statement_alias_keys = set()
         for row in rows:
             alias = merchant_alias_core(row["description"])
             key = merchant_alias_key(alias)
-            if not alias or not key: continue
-            item = grouped.setdefault(key, {"alias": alias, "count": 0, "statements": set()})
+            if key: statement_alias_keys.add(key)
+        if not statement_alias_keys: return []
+
+        # Keep occurrence counts and statement references current across the household history.
+        all_rows = c.execute("""SELECT t.id,t.description,t.statement_id FROM transactions t
+                                WHERE t.merchant_id IS NULL AND t.kind IN ('Purchase','Refund')""").fetchall()
+        grouped = {}
+        for row in all_rows:
+            alias = merchant_alias_core(row["description"])
+            key = merchant_alias_key(alias)
+            if key not in statement_alias_keys: continue
+            item = grouped.setdefault(key, {"alias":alias, "count":0, "statements":set(), "transaction_ids":[]})
             item["count"] += 1
+            item["transaction_ids"].append(row["id"])
             if row["statement_id"]: item["statements"].add(row["statement_id"])
+
         for key, item in grouped.items():
-            prior = c.execute("SELECT status FROM merchant_discoveries WHERE alias_key=?", (key,)).fetchone()
-            # Preserve a user's approve/reject decision and existing search result.
+            exact, close = _classify_merchant_alias(item["alias"], merchants)
+            prior = c.execute("SELECT id,status FROM merchant_discoveries WHERE alias_key=?", (key,)).fetchone()
+            statement_ids = json.dumps(sorted(item["statements"]))
+            if exact:
+                c.executemany("UPDATE transactions SET merchant_id=? WHERE id=? AND merchant_id IS NULL",
+                              [(exact["id"],txid) for txid in item["transaction_ids"]])
+                c.execute("""UPDATE merchant_discoveries SET status='approved',approved_merchant_id=?,
+                    transaction_count=?,statement_ids=?,results='[]',search_error='',decision_at=? WHERE alias_key=?""",
+                    (exact["id"],item["count"],statement_ids,now,key))
+                continue
             if prior and prior["status"] in ("approved", "rejected", "review", "searching"):
                 c.execute("UPDATE merchant_discoveries SET transaction_count=?,statement_ids=? WHERE alias_key=?",
-                          (item["count"], json.dumps(sorted(item["statements"])), key))
+                          (item["count"],statement_ids,key))
                 continue
-            c.execute("""INSERT INTO merchant_discoveries
-                (id,alias_key,raw_alias,query_alias,transaction_count,statement_ids,status,created_at)
-                VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(alias_key) DO UPDATE SET
-                raw_alias=excluded.raw_alias,query_alias=excluded.query_alias,
-                transaction_count=excluded.transaction_count,statement_ids=excluded.statement_ids""",
-                (str(uuid.uuid4()), key, item["alias"], item["alias"], item["count"],
-                 json.dumps(sorted(item["statements"])), "pending", now))
+            status = "close_match" if close else "pending"
+            results = json.dumps(close, ensure_ascii=False) if close else "[]"
+            if prior:
+                c.execute("""UPDATE merchant_discoveries SET raw_alias=?,query_alias=?,transaction_count=?,
+                    statement_ids=?,status=?,results=?,search_error='',approved_merchant_id=NULL WHERE alias_key=?""",
+                    (item["alias"],item["alias"],item["count"],statement_ids,status,results,key))
+                discovery_id = prior["id"]
+            else:
+                discovery_id = str(uuid.uuid4())
+                c.execute("""INSERT INTO merchant_discoveries
+                    (id,alias_key,raw_alias,query_alias,transaction_count,statement_ids,status,results,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (discovery_id,key,item["alias"],item["alias"],item["count"],statement_ids,status,results,now))
+            if auto_search and not close and os.environ.get("PARALLEL_API_KEY", "").strip():
+                c.execute("UPDATE merchant_discoveries SET status='searching',search_error='' WHERE id=?", (discovery_id,))
+                search_ids.append(discovery_id)
+            elif auto_search and not close:
+                c.execute("UPDATE merchant_discoveries SET search_error='Parallel search is not connected for automatic app lookups.' WHERE id=?", (discovery_id,))
+    for discovery_id in search_ids:
+        SEARCH_WORKERS.submit(search_discovery, discovery_id)
+    return search_ids
+
+def process_statement_discoveries(statement_id):
+    """Run merchant classification/search independently from the statement upload response."""
+    try:
+        queue_unknown_merchants(statement_id, auto_search=True)
+    except Exception as exc:
+        # Discovery is an optional follow-up; ingestion has already completed and remains successful.
+        print("Merchant follow-up failed for statement {}: {}".format(statement_id, str(exc)[:240]))
 
 def search_discovery(discovery_id):
     """Search one merchant alias in the background and leave the result for approval."""
@@ -895,7 +985,7 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as c:
                 rows = c.execute("""SELECT * FROM merchant_discoveries
                     WHERE status NOT IN ('approved','rejected') ORDER BY
-                    CASE status WHEN 'review' THEN 0 WHEN 'failed' THEN 1 WHEN 'no_results' THEN 2 ELSE 3 END,
+                    CASE status WHEN 'review' THEN 0 WHEN 'close_match' THEN 1 WHEN 'failed' THEN 2 WHEN 'no_results' THEN 3 ELSE 4 END,
                     transaction_count DESC,lower(raw_alias)""").fetchall()
                 counts = {r["status"]: r["n"] for r in c.execute("SELECT status,COUNT(*) n FROM merchant_discoveries GROUP BY status")}
             items = []
@@ -960,6 +1050,17 @@ class Handler(BaseHTTPRequestHandler):
                 c.executemany("UPDATE merchant_discoveries SET status='searching',search_error='' WHERE id=?", [(i,) for i in ids])
             for discovery_id in ids: SEARCH_WORKERS.submit(search_discovery, discovery_id)
             return self.send_json({"ok":True,"queued":len(ids)})
+        if path.startswith("/api/merchant-discoveries/") and path.endswith("/search-as-new"):
+            if not os.environ.get("PARALLEL_API_KEY", "").strip():
+                return self.send_json({"error":"Automatic Parallel lookups need a server-side API key."},400)
+            discovery_id=path.split("/")[-2]
+            with connect() as c:
+                row=c.execute("SELECT status FROM merchant_discoveries WHERE id=?",(discovery_id,)).fetchone()
+                if not row: return self.send_json({"error":"Suggestion not found"},404)
+                if row["status"]!="close_match": return self.send_json({"error":"Only a close match can be searched as a new merchant"},409)
+                c.execute("UPDATE merchant_discoveries SET status='searching',search_error='',results='[]' WHERE id=?",(discovery_id,))
+            SEARCH_WORKERS.submit(search_discovery,discovery_id)
+            return self.send_json({"ok":True,"queued":1})
         if path.startswith("/api/merchant-discoveries/") and path.endswith("/retry"):
             if not os.environ.get("PARALLEL_API_KEY", "").strip():
                 return self.send_json({"error":"Parallel search needs a PARALLEL_API_KEY in the server environment."},400)
@@ -975,35 +1076,45 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 d=json.loads(self.body()); discovery_id=path.split("/")[-2]
                 brand=(d.get("brand_name") or "").strip(); legal=(d.get("legal_name") or "").strip()
-                if not brand: raise ValueError("Enter the merchant's familiar brand name before approving")
                 with connect() as c:
                     discovery=c.execute("SELECT * FROM merchant_discoveries WHERE id=?",(discovery_id,)).fetchone()
                     if not discovery: return self.send_json({"error":"Suggestion not found"},404)
-                    if discovery["status"]!="review": raise ValueError("Only a search result waiting for review can be approved")
                     results=json.loads(discovery["results"])
-                    result_index=int(d.get("result_index",0))
-                    if result_index<0 or result_index>=len(results): raise ValueError("Choose a valid search result")
-                    selected=results[result_index]
-                    aliases=list(dict.fromkeys(x for x in [discovery["raw_alias"],discovery["query_alias"],brand,legal] if x))
                     merchants=c.execute("SELECT id,display_name,legal_name,aliases FROM merchants").fetchall()
-                    existing=None
-                    wanted=merchant_alias_key(brand)
-                    for merchant in merchants:
-                        known=[merchant["display_name"],merchant["legal_name"] or ""]+json.loads(merchant["aliases"])
-                        if any(merchant_alias_key(name)==wanted for name in known if name):
-                            existing=merchant; break
-                    if existing:
-                        mid=existing["id"]
-                        merged=list(dict.fromkeys(json.loads(existing["aliases"])+aliases))
-                        c.execute("UPDATE merchants SET aliases=?,legal_name=CASE WHEN ?!='' THEN ? ELSE legal_name END,discovery_url=?,discovery_title=? WHERE id=?",
-                                  (json.dumps(merged,ensure_ascii=False),legal,legal,selected.get("url",""),selected.get("title",""),mid))
+                    if discovery["status"]=="close_match":
+                        mid=(d.get("merchant_id") or "").strip()
+                        candidate=next((item for item in results if item.get("merchant_id")==mid),None)
+                        if not candidate: raise ValueError("Choose one of the possible existing merchants")
+                        merchant=next((item for item in merchants if item["id"]==mid),None)
+                        if not merchant: raise ValueError("That merchant is no longer in the directory")
+                        aliases=list(dict.fromkeys(json.loads(merchant["aliases"])+[discovery["raw_alias"],discovery["query_alias"]]))
+                        c.execute("UPDATE merchants SET aliases=? WHERE id=?",(json.dumps(aliases,ensure_ascii=False),mid))
+                        c.execute("UPDATE merchant_discoveries SET status='approved',approved_merchant_id=?,decision_at=? WHERE id=?",
+                                  (mid,datetime.datetime.now().isoformat(timespec="seconds"),discovery_id))
                     else:
-                        mid=str(uuid.uuid4()); now=datetime.datetime.now().isoformat(timespec="seconds")
-                        c.execute("""INSERT INTO merchants(id,display_name,aliases,category,created_at,legal_name,discovery_url,discovery_title)
-                                     VALUES(?,?,?,?,?,?,?,?)""",
-                                  (mid,brand,json.dumps(aliases,ensure_ascii=False),"Uncategorised",now,legal,selected.get("url",""),selected.get("title","")))
-                    c.execute("UPDATE merchant_discoveries SET status='approved',approved_merchant_id=?,decision_at=? WHERE id=?",
-                              (mid,datetime.datetime.now().isoformat(timespec="seconds"),discovery_id))
+                        if discovery["status"]!="review": raise ValueError("Only a search result waiting for review can be approved")
+                        if not brand: raise ValueError("Enter the merchant's familiar brand name before approving")
+                        result_index=int(d.get("result_index",0))
+                        if result_index<0 or result_index>=len(results): raise ValueError("Choose a valid search result")
+                        selected=results[result_index]
+                        aliases=list(dict.fromkeys(x for x in [discovery["raw_alias"],discovery["query_alias"],brand,legal] if x))
+                        existing=None
+                        wanted=merchant_alias_key(brand)
+                        for merchant in merchants:
+                            if any(merchant_alias_key(name)==wanted for name in _merchant_names(merchant)):
+                                existing=merchant; break
+                        if existing:
+                            mid=existing["id"]
+                            merged=list(dict.fromkeys(json.loads(existing["aliases"])+aliases))
+                            c.execute("UPDATE merchants SET aliases=?,legal_name=CASE WHEN ?!='' THEN ? ELSE legal_name END,discovery_url=?,discovery_title=? WHERE id=?",
+                                      (json.dumps(merged,ensure_ascii=False),legal,legal,selected.get("url",""),selected.get("title",""),mid))
+                        else:
+                            mid=str(uuid.uuid4()); now=datetime.datetime.now().isoformat(timespec="seconds")
+                            c.execute("""INSERT INTO merchants(id,display_name,aliases,category,created_at,legal_name,discovery_url,discovery_title)
+                                         VALUES(?,?,?,?,?,?,?,?)""",
+                                      (mid,brand,json.dumps(aliases,ensure_ascii=False),"Uncategorised",now,legal,selected.get("url",""),selected.get("title","")))
+                        c.execute("UPDATE merchant_discoveries SET status='approved',approved_merchant_id=?,decision_at=? WHERE id=?",
+                                  (mid,datetime.datetime.now().isoformat(timespec="seconds"),discovery_id))
                 self.rematch_merchant(mid)
                 queue_unknown_merchants()
                 return self.send_json({"ok":True,"merchant_id":mid})
@@ -1013,7 +1124,7 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as c:
                 row=c.execute("SELECT status FROM merchant_discoveries WHERE id=?",(discovery_id,)).fetchone()
                 if not row: return self.send_json({"error":"Suggestion not found"},404)
-                if row["status"] not in ("review","no_results","failed","pending"):
+                if row["status"] not in ("review","close_match","no_results","failed","pending"):
                     return self.send_json({"error":"This suggestion cannot be rejected in its current state"},409)
                 c.execute("UPDATE merchant_discoveries SET status='rejected',decision_at=? WHERE id=?",
                           (datetime.datetime.now().isoformat(timespec="seconds"),discovery_id))
@@ -1074,7 +1185,6 @@ class Handler(BaseHTTPRequestHandler):
                             item["statement_id"]=sid
                             item["merchant_id"]=self.match_merchant(item.get("description", ""))
                             self.save_transaction(item,False)
-                        queue_unknown_merchants()
                         count=len(items); status="ready" if count else "empty"
                         extracted=round(sum(float(i["amount_inr"]) for i in items if i.get("kind")!="Card payment"),2)
                         if summary.get("statement_month"):
@@ -1089,6 +1199,9 @@ class Handler(BaseHTTPRequestHandler):
                 difference=round(extracted-expected,2) if extracted is not None and expected is not None else None
                 recon="matched" if difference is not None and abs(difference)<=1 else ("needs attention" if difference is not None else "unavailable")
                 with connect() as c: c.execute("UPDATE statements SET period=?,statement_month=?,extraction_status=?,transaction_count=?,expected_charges_inr=?,extracted_charges_inr=?,reconciliation_difference_inr=?,reconciliation_status=? WHERE id=?",(period,statement_month,status,count,expected,extracted,difference,recon,sid))
+                if count:
+                    try: SEARCH_WORKERS.submit(process_statement_discoveries,sid)
+                    except RuntimeError: pass
                 return self.send_json({"ok":True,"id":sid,"extraction_status":status,"transaction_count":count,"pages":pages,"message":message,"reconciliation_status":recon,"reconciliation_difference_inr":difference})
             except Exception as e: return self.send_json({"error":str(e)},400)
         self.send_json({"error":"Not found"},404)
@@ -1150,20 +1263,29 @@ class Handler(BaseHTTPRequestHandler):
                 recalculate_statement(c, statement_id)
     def match_merchant(self,description):
         raw=re.sub(r"[^A-Z0-9]", "", (description or "").upper())
-        with connect() as c: rows=c.execute("SELECT id,display_name,aliases FROM merchants").fetchall()
+        with connect() as c: rows=c.execute("SELECT id,display_name,legal_name,aliases FROM merchants").fetchall()
+        core_key=merchant_alias_key(merchant_alias_core(description))
         for row in rows:
-            aliases=[row["display_name"]]+json.loads(row["aliases"])
-            if any(alias.strip() and re.sub(r"[^A-Z0-9]", "", alias.upper()) in raw for alias in aliases): return row["id"]
+            if core_key and any(merchant_alias_key(name)==core_key for name in _merchant_names(row)): return row["id"]
+        # `contains` matching is reserved for statement aliases already approved into the master.
+        for row in rows:
+            try: aliases=json.loads(row["aliases"] or "[]")
+            except (TypeError,ValueError): aliases=[]
+            if any(len(merchant_alias_key(alias))>=4 and merchant_alias_key(alias) in raw for alias in aliases): return row["id"]
         return None
     def rematch_merchant(self,merchant_id):
         with connect() as c:
-            merchant=c.execute("SELECT display_name,aliases FROM merchants WHERE id=?",(merchant_id,)).fetchone()
+            merchant=c.execute("SELECT display_name,legal_name,aliases FROM merchants WHERE id=?",(merchant_id,)).fetchone()
             if not merchant:return
-            aliases=[merchant["display_name"]]+json.loads(merchant["aliases"])
+            aliases=_merchant_names(merchant)
+            try: statement_aliases=json.loads(merchant["aliases"] or "[]")
+            except (TypeError,ValueError): statement_aliases=[]
+            exact_keys={merchant_alias_key(name) for name in aliases if name}
             rows=c.execute("SELECT id,description,merchant_id FROM transactions WHERE merchant_id IS NULL OR merchant_id=?",(merchant_id,)).fetchall()
             for row in rows:
                 raw=re.sub(r"[^A-Z0-9]", "", (row["description"] or "").upper())
-                matched=any(a.strip() and re.sub(r"[^A-Z0-9]", "", a.upper()) in raw for a in aliases)
+                core_key=merchant_alias_key(merchant_alias_core(row["description"]))
+                matched=core_key in exact_keys or any(len(merchant_alias_key(a))>=4 and merchant_alias_key(a) in raw for a in statement_aliases)
                 if matched and row["merchant_id"] is None:c.execute("UPDATE transactions SET merchant_id=? WHERE id=?",(merchant_id,row["id"]))
                 elif not matched and row["merchant_id"]==merchant_id:c.execute("UPDATE transactions SET merchant_id=NULL WHERE id=?",(row["id"],))
     def do_DELETE(self):
