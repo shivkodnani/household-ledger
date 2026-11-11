@@ -518,6 +518,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type",content_type or (mimetypes.guess_type(filename)[0] or "application/octet-stream")+"; charset=utf-8")
         self.send_header("Content-Length",str(len(body))); self.send_header("Cache-Control","no-cache")
         self.end_headers(); self.wfile.write(body)
+    def send_frontend_file(self, relative_path):
+        frontend_root = (ROOT / "dist").resolve()
+        file_path = (frontend_root / relative_path).resolve()
+        if file_path != frontend_root and frontend_root not in file_path.parents:
+            return self.send_json({"error":"Not found"},404)
+        if not file_path.is_file(): return self.send_json({"error":"Not found"},404)
+        body = file_path.read_bytes(); content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in ("application/javascript", "application/json", "image/svg+xml"):
+            content_type += "; charset=utf-8"
+        self.send_response(200); self.send_header("Content-Type",content_type)
+        self.send_header("Content-Length",str(len(body)))
+        self.send_header("Cache-Control","public, max-age=31536000, immutable" if relative_path.startswith("assets/") else "no-cache")
+        self.end_headers(); self.wfile.write(body)
+    def send_frontend_app(self):
+        return self.send_frontend_file("index.html")
     def send_login_page(self):
         return self.send_static("login.html","text/html; charset=utf-8")
     def auth_status(self):
@@ -926,6 +941,10 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path); path = u.path
         if path == "/healthz": return self.send_json({"ok":True})
         if not self.secure_proxy_request(): return self.send_json({"error":"HTTPS through the trusted proxy is required"},400)
+        if path.startswith("/assets/"):
+            return self.send_frontend_file(path.lstrip("/"))
+        if path in ("/", "/index.html", "/login", "/transactions", "/statements", "/merchants", "/settings"):
+            return self.send_frontend_app()
         if path == "/api/cron/backup":
             expected=os.environ.get("CRON_SECRET", "") or os.environ.get("LEDGER_BACKUP_CRON_SECRET", "")
             supplied=self.headers.get("Authorization", "")
@@ -957,13 +976,6 @@ class Handler(BaseHTTPRequestHandler):
             body=backup_path.read_bytes(); self.send_response(200); self.send_header("Content-Type","application/octet-stream")
             self.send_header("Content-Disposition",'attachment; filename="'+name+'"'); self.send_header("Content-Length",str(len(body)))
             self.send_header("Cache-Control","private, no-store"); self.end_headers(); return self.wfile.write(body)
-        if path in ("/login.html","/login.js","/login.css","/theme.js","/icons.svg"):
-            return self.send_static(path[1:])
-        if path == "/" or path == "/index.html":
-            if AUTH_REQUIRED and not self.current_user(): return self.send_login_page()
-            return self.send_static("index.html","text/html; charset=utf-8")
-        if path in ("/style.css","/app.js"):
-            return self.send_static(path[1:])
         if not self.authorize(): return
         if path == "/api/transactions":
             with connect() as c:
@@ -1014,10 +1026,6 @@ class Handler(BaseHTTPRequestHandler):
             tid = path.split("/")[-2]
             try: return self.send_snapshot(tid)
             except Exception as e: return self.send_json({"error":str(e)},404)
-        if path == "/" or path == "/index.html":
-            b=(ROOT/"index.html").read_bytes(); self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(b))); self.send_header("Cache-Control","no-cache"); self.end_headers(); return self.wfile.write(b)
-        if path in ("/style.css","/app.js"):
-            b=(ROOT/path[1:]).read_bytes(); self.send_response(200); self.send_header("Content-Type",mimetypes.guess_type(path)[0]+"; charset=utf-8"); self.send_header("Content-Length",str(len(b))); self.send_header("Cache-Control","no-cache"); self.end_headers(); return self.wfile.write(b)
         self.send_json({"error":"Not found"},404)
     def do_POST(self):
         path=urlparse(self.path).path

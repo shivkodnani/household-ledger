@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 node_modules/
+dist/
 *.py[cod]
 
 # Private household records and local artifacts

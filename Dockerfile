@@ -13,8 +13,9 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY package.json ./
-RUN npm install --omit=dev
+RUN npm install
 COPY . .
+RUN npm run build && npm prune --omit=dev
 RUN mkdir -p /app/data/statements /app/data/backups
 
 VOLUME ["/app/data"]

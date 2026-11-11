@@ -5,13 +5,15 @@ A local-first web app for reviewing household card and manual expenses. The app 
 ## Run locally
 
 ```sh
+npm install
+npm run build
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python app.py
 ```
 Open <http://127.0.0.1:8000>. The app binds to localhost by default. Its SQLite database and retained statement PDFs live in `data/`; keep that folder backed up. Do not expose this development server directly to the public internet.
 
-For HSBC extraction, the machine needs Node.js, the `tesseract.js` Node dependency, and Poppler's `pdftoppm` command. The app detects the Codex desktop runtime automatically when available. The English OCR model is included under `vendor/tessdata/`; OCR runs locally and the PDF is not sent to a service. On a separate machine, install the Node dependency with `npm install` and install Poppler using that operating system's package manager.
+The browser interface is built with React and local shadcn/ui components using Radix primitives and Tailwind. To work on it with Vite hot reload, start the Python server in one terminal and run `npm run dev` in another, then open <http://127.0.0.1:5173>. The built frontend is served by the Python app on port 8000. For HSBC extraction, the machine also needs the `tesseract.js` Node dependency and Poppler's `pdftoppm` command. The English OCR model is included under `vendor/tessdata/`; OCR runs locally and the PDF is not sent to a service.
 
 ## Current capabilities
 
