@@ -80,8 +80,9 @@ export function StatementsPage() {
       });
       setOpen(false); resetForm();
       void reload();
-      const detail = bank === "HSBC" ? `${result.transaction_count} transaction lines extracted` : "PDF saved for your records";
-      toast.success("Statement uploaded", { description: result.message || detail });
+      const detail = ["HSBC", "ICICI"].includes(bank) ? `${result.transaction_count} transaction lines extracted` : "PDF saved for your records";
+      if (result.extraction_status === "error") toast.error("Statement saved, but extraction failed", { description: result.message || "Review the statement and its password configuration." });
+      else toast.success("Statement uploaded", { description: result.message || detail });
       // Merchant discovery runs on the server after statement processing. Refresh its review queue later without delaying upload.
       window.setTimeout(() => { void reload(); }, 1800);
     } catch (reason) {
@@ -93,7 +94,7 @@ export function StatementsPage() {
   return <>
     <PageHeading title="Statements" description="Keep statement PDFs alongside the structured transactions extracted for your analytics." actions={<Dialog open={open} onOpenChange={(value) => { setOpen(value); if (!value) resetForm(); }}>
       <DialogTrigger asChild><Button><Plus /> Upload statement</Button></DialogTrigger>
-      <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Upload a statement PDF</DialogTitle><DialogDescription>HSBC statements are itemized automatically. Other banks are stored as source PDFs for now.</DialogDescription></DialogHeader>
+      <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Upload a statement PDF</DialogTitle><DialogDescription>HSBC and ICICI Amazon Pay statements are itemized automatically. Other banks are stored as source PDFs for now.</DialogDescription></DialogHeader>
         <form className="space-y-4" onSubmit={(event) => void upload(event)}>
           {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
           <div className="grid gap-4 sm:grid-cols-2">
