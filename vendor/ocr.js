@@ -13,6 +13,7 @@ async function main() {
     gzip: false,
     logger: () => {},
   });
+  const maxXRatio = Number(process.env.LEDGER_OCR_MAX_X_RATIO || 0.72);
   const pages = [];
   try {
     for (let i = 0; i < images.length; i += 1) {
@@ -29,7 +30,7 @@ async function main() {
         for (const paragraph of block.paragraphs || []) {
           for (const line of paragraph.lines || []) {
             const words = (line.words || [])
-              .filter((word) => word.bbox.x0 < width * 0.72)
+              .filter((word) => word.bbox.x0 < width * maxXRatio)
               .sort((a, b) => a.bbox.x0 - b.bbox.x0);
             const text = words.map((word) => word.text).join(' ').replace(/\s+/g, ' ').trim();
             if (text) lines.push({
