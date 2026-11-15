@@ -15,7 +15,7 @@ NODE_MODULES_MARKERS = ("tesseract.js",)
 MONTHS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
           "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
 MONTH_PATTERN = "|".join(MONTHS)
-DATE_PREFIX = re.compile(r"^\s*[`'’‘|]*([0-9A-Z|{}]{1,2})\s*(" + MONTH_PATTERN + r")\b", re.I)
+DATE_PREFIX = re.compile(r"^\s*[`'’‘|]*([0-9A-Z|{}@]{1,2})\s*(" + MONTH_PATTERN + r")\b", re.I)
 AMOUNT_PATTERN = re.compile(r"(?<![A-Z0-9])(?:\d{1,3}(?:,\d{3})+|\d+)[.,]\d{2}(?!\d)", re.I)
 YEAR_PATTERN = re.compile(r"\b20\d{2}\b")
 FOREX_PATTERN = re.compile(r"\b(SEK|NOK|DKK|USD|EUR|GBP|CHF|AUD|CAD|JPY|CNY|HKD|THB|SGD|AED)\b", re.I)
@@ -42,14 +42,44 @@ def _runtime_paths():
     return node, modules, pdftoppm
 
 
-def _month_and_day(raw):
+def _month_and_day(raw, period_bounds=None):
     # OCR commonly turns the O in OCT into a zero and a leading 1 into a brace.
     raw = re.sub(r"0CT", "OCT", raw or "", flags=re.I)
+    raw = re.sub(r"MAAY\b", "MAY", raw, flags=re.I)
     match = DATE_PREFIX.match(raw)
     if not match: return None
     day_raw, month_raw = match.group(1).upper().replace("|", "1"), match.group(2).upper()
+    month = MONTHS[month_raw]
+    if len(day_raw) == 2:
+        if day_raw == "OO" and period_bounds:
+            start, end = period_bounds
+            try:
+                if start <= date(end.year - 1 if month > end.month else end.year, month, 9) <= end:
+                    day_raw = "09"
+            except ValueError:
+                pass
+        elif day_raw[0] in ("0", "O", "Q", "D") and day_raw[1] in ("A", "O", "B", "@"):
+            day_raw = day_raw[0] + "8"
+        elif day_raw[0] in ("0", "O", "Q", "D") and day_raw[1] == "@":
+            day_raw = day_raw[0] + "8"
+        elif day_raw[0] in ("0", "O", "Q", "D") and day_raw[1] == "S" and period_bounds:
+            start, end = period_bounds
+            try:
+                in_period = lambda day: start <= date(end.year - 1 if month > end.month else end.year, month, day) <= end
+                if in_period(8) and not in_period(5): day_raw = day_raw[0] + "8"
+            except ValueError:
+                pass
+        elif day_raw == "A0" or day_raw == "AO":
+            day_raw = "10"
+        elif day_raw == "TE":
+            day_raw = "16"
+        elif day_raw == "2A":
+            day_raw = "23"
+        elif day_raw == "S1":
+            day_raw = "31"
+    # HSBC's narrow date column frequently renders 08 as OS, OA, or OO.
     replacements = {"O": "0", "Q": "0", "D": "0", "{": "1", "S": "5", "G": "9",
-                    "I": "1", "L": "1", "T": "1", "Z": "2", "B": "8"}
+                    "I": "1", "L": "1", "T": "1", "Z": "2", "B": "8", "@": "8"}
     digits = "".join(replacements.get(ch, ch) for ch in day_raw)
     try: day = int(digits)
     except ValueError: return None
@@ -57,7 +87,37 @@ def _month_and_day(raw):
         try: day = int("1" + digits[1:])
         except ValueError: return None
     if not 1 <= day <= 31: return None
-    return day, MONTHS[month_raw], match.end()
+    return day, month, match.end()
+
+
+def _hsbc_date_from_crop(page, line, period_bounds=None):
+    height = max(1, int(page.get("height", 1)))
+    line_center = (float(line.get("y0", 0)) + float(line.get("y1", line.get("y0", 0)))) / 2
+    max_distance = max(18, height * 0.012)
+    candidates = []
+    for word in page.get("date_words", []):
+        parsed = _month_and_day(word.get("text", ""), period_bounds)
+        if not parsed: continue
+        center = (float(word.get("y0", 0)) + float(word.get("y1", word.get("y0", 0)))) / 2
+        distance = abs(center - line_center)
+        if distance <= max_distance:
+            candidates.append((distance, parsed))
+    return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def _detail_without_ocr_date(raw, parsed_from_full_line):
+    normalized = re.sub(r"MAAY\b", "MAY", raw, flags=re.I)
+    match = DATE_PREFIX.match(normalized)
+    if match:
+        first, separator, rest = raw.partition(" ")
+        return rest.strip(" \t|_-'’‘") if separator else raw[match.end():].strip(" \t|_-'’‘")
+    if parsed_from_full_line:
+        return raw[parsed_from_full_line[2]:].strip(" \t|_-'’‘")
+    first, separator, rest = raw.partition(" ")
+    first = re.sub(r"MAAY\b", "MAY", first, flags=re.I)
+    if separator and len(first) <= 9 and re.search(r"(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)", first, re.I):
+        return rest.strip(" \t|_-'’‘")
+    return raw.strip(" \t|_-'’‘")
 
 
 def _statement_year(ocr, period_hint=""):
@@ -74,6 +134,24 @@ def _statement_end_month(ocr, period_hint=""):
     if month_year:
         return MONTHS[month_year[-1].upper()]
     return date.today().month
+
+
+def _statement_period_bounds(ocr, period_hint=""):
+    text = (period_hint or "") + " " + " ".join(p.get("text", "") for p in ocr.get("pages", [])[:2])
+    period = re.search(
+        r"\b(\d{1,2})\s+(" + MONTH_PATTERN + r")\s+(20\d{2})\s*(?:TO|T0|[-–])\s*"
+        r"(\d{1,2})\s+(" + MONTH_PATTERN + r")\s+(20\d{2})\b",
+        text,
+        re.I,
+    )
+    if not period:
+        return None
+    try:
+        start = date(int(period.group(3)), MONTHS[period.group(2).upper()], int(period.group(1)))
+        end = date(int(period.group(6)), MONTHS[period.group(5).upper()], int(period.group(4)))
+        return (start, end) if start <= end else None
+    except (KeyError, ValueError):
+        return None
 
 
 def _transaction_date(day, month, end_year, end_month):
@@ -128,11 +206,31 @@ def _hsbc_amount_word(line, column_center, page_width):
     return token, float(word.get("confidence", 0))
 
 
+def _hsbc_amount_from_crop(page, line):
+    """Read the INR token from a focused OCR pass over HSBC's Amount column."""
+    height = max(1, int(page.get("height", 1)))
+    line_center = (float(line.get("y0", 0)) + float(line.get("y1", line.get("y0", 0)))) / 2
+    max_distance = max(18, height * 0.012)
+    candidates = []
+    for word in page.get("amount_words", []):
+        match = AMOUNT_PATTERN.search(word.get("text", "") or "")
+        if not match: continue
+        center = (float(word.get("y0", 0)) + float(word.get("y1", word.get("y0", 0)))) / 2
+        distance = abs(center - line_center)
+        if distance <= max_distance:
+            candidates.append((distance, word, match.group(0)))
+    if not candidates: return None, None, None
+    _, word, token = min(candidates, key=lambda item: item[0])
+    center = (float(word.get("y0", 0)) + float(word.get("y1", word.get("y0", 0)))) / 2
+    return token, float(word.get("confidence", 0)), round(center, 1)
+
+
 def parse_hsbc_ocr(ocr, period_hint=""):
     """Convert line-level OCR into reviewable statement transactions."""
     pages = ocr.get("pages", [])
     year = _statement_year(ocr, period_hint)
     end_month = _statement_end_month(ocr, period_hint)
+    period_bounds = _statement_period_bounds(ocr, period_hint)
     # OCR may distort the masked digits and card separators. Detect card
     # headings by their visible last four digits and trailing cardholder name.
     card_pattern = re.compile(r"\b(\d{4})\s+([A-Z][A-Z .'-]{2,})\s*$", re.I)
@@ -144,6 +242,7 @@ def parse_hsbc_ocr(ocr, period_hint=""):
         width = max(1, int(page.get("width", 1)))
         amount_column_center = _hsbc_amount_column_center(page)
         page_num = int(page.get("page", 0))
+        used_amount_rows = set()
         for line in page.get("lines", []):
             raw = re.sub(r"\s+", " ", line.get("text", "")).strip()
             if not raw: continue
@@ -155,17 +254,37 @@ def parse_hsbc_ocr(ocr, period_hint=""):
                 continue
             y = float(line.get("y0", 0)) / height
             if y < 0.25 or y > 0.80: continue
-            parsed_date = _month_and_day(raw)
+            if any(marker in raw.upper() for marker in (
+                "OPENING BALANCE", "AVAILABLE CREDIT LIMIT", "PURCHASES & INSTALLMENTS",
+                "TOTAL PURCHASE", "TOTAL CASH", "TOTAL BALANCE TRANSFER", "TOTAL LOAN",
+                "ACCOUNT SUMMARY", "INTEREST RATE",
+            )):
+                continue
+            parsed_from_full_line = _month_and_day(raw, period_bounds)
+            parsed_date = _hsbc_date_from_crop(page, line, period_bounds) or parsed_from_full_line
             if not parsed_date: continue
             day, month, date_end = parsed_date
             txn_date = _transaction_date(day, month, year, end_month)
             if not txn_date: continue
-            detail = raw[date_end:].strip(" \t|_-'’‘")
+            detail = _detail_without_ocr_date(raw, parsed_from_full_line)
             if any(marker in detail.upper() for marker in ("OUTSTANDING BALANCE", "TOTAL PURCHASE", "TOTAL CASH", "BALANCE TRANSFER OUTSTANDING", "LOAN OUTSTANDING", "STATEMENT SUMMARY")):
                 continue
             amounts = AMOUNT_PATTERN.findall(detail)
-            if not amounts: continue
-            amount_token, amount_confidence = _hsbc_amount_word(line, amount_column_center, width)
+            column_token, column_confidence, amount_row_key = _hsbc_amount_from_crop(page, line)
+            full_token, full_confidence = _hsbc_amount_word(line, amount_column_center, width)
+            if column_token is not None:
+                amount_token, amount_confidence = column_token, column_confidence
+                if full_token is not None:
+                    same_amount = re.sub(r"\D", "", column_token) == re.sub(r"\D", "", full_token)
+                    confidence_values = [value for value in (column_confidence, full_confidence) if value is not None]
+                    # Agreement between the full row and focused Amount-column OCR
+                    # is stronger evidence than either Tesseract word score alone.
+                    amount_confidence = 100.0 if same_amount else min(confidence_values)
+            else:
+                amount_token, amount_confidence = full_token, full_confidence
+                amount_row_key = None
+            if not amounts and amount_token is None: continue
+            if amount_row_key is not None and amount_row_key in used_amount_rows: continue
             if amount_token is not None:
                 amount = _money(amount_token)
             else:
@@ -178,17 +297,22 @@ def parse_hsbc_ocr(ocr, period_hint=""):
             original_tokens = list(amounts)
             if amount_token is not None:
                 amount_key = re.sub(r"\D", "", amount_token)
+                removed = False
                 for index in range(len(original_tokens) - 1, -1, -1):
                     if re.sub(r"\D", "", original_tokens[index]) == amount_key:
                         original_tokens.pop(index)
+                        removed = True
                         break
+                if not removed and original_tokens and (len(original_tokens) > 1 or not currency_match):
+                    original_tokens.pop()
             else:
                 original_tokens.pop()
             original = _money(original_tokens[-1]) if currency_match and original_tokens else None
             upper = detail.upper()
             is_payment = any(s in upper for s in ("BBPS PMT", "PAYMENT RECEIVED", "PAYMENT THANK", "CARD PAYMENT"))
             is_refund = not is_payment and any(s in upper for s in ("REFUND", "REVERSAL", "CHARGEBACK"))
-            if not is_payment and not is_refund and " CR" in upper:
+            has_credit_marker = bool(re.search(r"\d[\d,]*[.,]\d{2}\s*CR\b\s*$", upper))
+            if not is_payment and not is_refund and has_credit_marker:
                 is_refund = True
             kind = "Card payment" if is_payment else ("Refund" if is_refund else "Purchase")
             if is_refund: amount = -amount
@@ -201,7 +325,7 @@ def parse_hsbc_ocr(ocr, period_hint=""):
             description = re.sub(r"\bCR\b", "", description, flags=re.I)
             description = re.sub(r"\s+", " ", description).strip(" |_-'")
             if len(description) < 2: description = detail
-            confidence = float(line.get("confidence", 0))
+            confidence = float(amount_confidence or 0)
             amount_confidence_text = "{:.1f}%".format(amount_confidence) if amount_confidence is not None else "unavailable"
             found.append({
                 "date": txn_date,
@@ -216,7 +340,7 @@ def parse_hsbc_ocr(ocr, period_hint=""):
                 "payment_method": "Credit card",
                 "category": "Uncategorised",
                 "statement_id": None,
-                "notes": "Imported from page {} · line OCR confidence {:.1f}% · INR amount confidence {}".format(page_num, confidence, amount_confidence_text),
+                "notes": "Imported from page {} · INR Amount column OCR confidence {}".format(page_num, amount_confidence_text),
                 "source_page": page_num,
                 "source_bbox": [int(line.get("x0", 0)), int(line.get("y0", 0)),
                                 int(line.get("x1", page.get("width", 0))), int(line.get("y1", 0))],
@@ -224,6 +348,8 @@ def parse_hsbc_ocr(ocr, period_hint=""):
                 "ocr_amount_confidence": amount_confidence,
                 "ocr_amount_match": 1 if amount_token is not None else 0,
             })
+            if amount_row_key is not None:
+                used_amount_rows.add(amount_row_key)
     return found
 
 
@@ -271,6 +397,7 @@ def _extract_hsbc_pdf(pdf_path, job_dir, period_hint=""):
     env = os.environ.copy()
     env["NODE_PATH"] = modules
     env["LEDGER_OCR_CACHE"] = str(job_dir / "cache")
+    env["LEDGER_OCR_HSBC_COLUMNS"] = "1"
     proc = subprocess.run([node, str(ROOT / "vendor" / "ocr.js")], input=json.dumps([str(p) for p in images]),
                           text=True, capture_output=True, env=env, cwd=str(ROOT), timeout=1200)
     if proc.returncode:

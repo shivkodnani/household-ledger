@@ -425,9 +425,12 @@ def allocation_suggestions(rows, merchant_rules):
     return result
 
 def recalculate_statement(c, statement_id):
-    statement = c.execute("SELECT expected_charges_inr FROM statements WHERE id=?", (statement_id,)).fetchone()
+    statement = c.execute("SELECT bank,expected_charges_inr FROM statements WHERE id=?", (statement_id,)).fetchone()
     if not statement: return
-    totals = c.execute("SELECT COUNT(*) n,COALESCE(SUM(CASE WHEN kind!='Card payment' THEN amount_inr ELSE 0 END),0) amount FROM transactions WHERE statement_id=?", (statement_id,)).fetchone()
+    if (statement["bank"] or "").upper() == "HSBC":
+        totals = c.execute("SELECT COUNT(*) n,COALESCE(SUM(CASE WHEN kind='Purchase' THEN amount_inr ELSE 0 END),0) amount FROM transactions WHERE statement_id=?", (statement_id,)).fetchone()
+    else:
+        totals = c.execute("SELECT COUNT(*) n,COALESCE(SUM(CASE WHEN kind!='Card payment' THEN amount_inr ELSE 0 END),0) amount FROM transactions WHERE statement_id=?", (statement_id,)).fetchone()
     expected = statement["expected_charges_inr"]
     extracted = round(float(totals["amount"]), 2)
     difference = round(extracted-float(expected), 2) if expected is not None else None
@@ -1203,7 +1206,7 @@ class Handler(BaseHTTPRequestHandler):
                             item["merchant_id"]=self.match_merchant(item.get("description", ""))
                             self.save_transaction(item,False)
                         count=len(items); status="ready" if count else "empty"
-                        extracted=round(sum(float(i["amount_inr"]) for i in items if i.get("kind")!="Card payment"),2)
+                        extracted=round(sum(float(i["amount_inr"]) for i in items if i.get("kind")=="Purchase"),2)
                         if summary.get("statement_month"):
                             statement_month=summary["statement_month"]
                         if not period and summary.get("statement_period"):
