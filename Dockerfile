@@ -1,3 +1,12 @@
+FROM node:24-bookworm-slim AS frontend-build
+
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@11.25.0 --activate
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build && pnpm prune --prod
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -6,16 +15,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm poppler-utils postgresql-client \
+    && apt-get install -y --no-install-recommends libstdc++6 poppler-utils postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY package.json ./
-RUN npm install
 COPY . .
-RUN npm run build && npm prune --omit=dev
+COPY --from=frontend-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend-build /app/node_modules ./node_modules
+COPY --from=frontend-build /app/out ./out
 RUN mkdir -p /app/data/statements /app/data/backups
 
 VOLUME ["/app/data"]

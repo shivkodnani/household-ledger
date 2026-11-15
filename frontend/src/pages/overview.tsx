@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { ArrowDownLeft, ArrowUpRight, Banknote, CalendarDays, ChevronDown, CircleAlert, CreditCard, Plus, ReceiptText, Wallet } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Banknote, CalendarDays, Check, ChevronDown, CircleAlert, CreditCard, Minus, Plus, ReceiptText, Wallet, X } from "lucide-react";
 import type { Transaction } from "@/lib/types";
 import { money, monthLabel } from "@/lib/utils";
 import { useLedger } from "@/lib/ledger";
@@ -10,10 +10,22 @@ import { TransactionDialog } from "@/components/transaction-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select as MonthSelect,
+  SelectClear as MonthSelectClear,
+  SelectContent as MonthSelectContent,
+  SelectGroup as MonthSelectGroup,
+  SelectGroupLabel as MonthSelectGroupLabel,
+  SelectItem as MonthSelectItem,
+  SelectItemIndicator as MonthSelectItemIndicator,
+  SelectLabel as MonthSelectLabel,
+  SelectSelectAll as MonthSelectAll,
+  SelectTrigger as MonthSelectTrigger,
+  SelectValue as MonthSelectValue,
+  type ListData,
+} from "@ui-sdk/react/select";
 
 function amountOf(items: Transaction[]) {
   return items.reduce((total, item) => total + Number(item.amount_inr || 0), 0);
@@ -52,7 +64,6 @@ export function OverviewPage() {
   const { transactions, statements, merchants } = useLedger();
   const [months, setMonths] = React.useState<string[]>([]);
   const monthsInitialized = React.useRef(false);
-  const [monthMenuOpen, setMonthMenuOpen] = React.useState(false);
   const [bank, setBank] = React.useState("all");
   const [card, setCard] = React.useState("all");
   const [transactionOpen, setTransactionOpen] = React.useState(false);
@@ -63,7 +74,12 @@ export function OverviewPage() {
     ] as string[])].sort().reverse(),
     [statements, transactions],
   );
-  const years = [...new Set(availableMonths.map((month) => month.slice(0, 4)))];
+  const years = [...new Set(availableMonths.map((month) => month.slice(0, 4)))].sort().reverse();
+  const monthOptions: ListData = years.map((year) => ({
+    type: "group",
+    label: year,
+    items: availableMonths.filter((month) => month.startsWith(year)).map((month) => ({ value: month, label: monthLabel(month) })),
+  }));
 
   React.useEffect(() => {
     if (!monthsInitialized.current && availableMonths.length) {
@@ -74,7 +90,6 @@ export function OverviewPage() {
   }, [availableMonths, statements]);
 
   const selectedMonths = months.filter((month) => availableMonths.includes(month));
-  const monthText = selectedMonths.length === 1 ? monthLabel(selectedMonths[0]) : selectedMonths.length ? selectedMonths.length + " months" : "Select months";
   const monthTransactions = transactions.filter((item) => selectedMonths.includes(item.statement_month || item.date?.slice(0, 7) || ""));
   const banks = [...new Set(monthTransactions.map((item) => item.bank).filter(Boolean) as string[])].sort();
   const cards = [...new Set(monthTransactions.filter((item) => bank === "all" || item.bank === bank).map((item) => item.card_name).filter(Boolean) as string[])].sort();
@@ -98,8 +113,8 @@ export function OverviewPage() {
       item.reconciliation_status === "needs attention",
   );
 
-  function toggleMonth(month: string, checked: boolean | "indeterminate") {
-    setMonths((current) => checked ? [...new Set([...current, month])].sort().reverse() : current.filter((item) => item !== month));
+  function changeMonths(value: string[]) {
+    setMonths([...value].sort().reverse());
     setBank("all");
     setCard("all");
   }
@@ -120,36 +135,36 @@ export function OverviewPage() {
       <div className="mb-5 flex flex-col gap-3 rounded-xl border bg-card p-3 sm:flex-row sm:items-end sm:p-4">
         <div className="w-full space-y-1.5 sm:w-64">
           <p className="text-xs font-medium text-muted-foreground">Statement months</p>
-          <Popover open={monthMenuOpen} onOpenChange={setMonthMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button variant="outline" className="w-full justify-between font-normal">
-                <span className="flex items-center gap-2 truncate"><CalendarDays className="size-4 text-muted-foreground" />{monthText}</span>
-                <ChevronDown className="size-4 text-muted-foreground" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-72 p-0">
-              <div className="max-h-80 overflow-y-auto p-3">
-                {years.length ? years.map((year) => (
-                  <section key={year} className="mb-3 last:mb-0">
-                    <p className="mb-2 text-xs font-semibold text-muted-foreground">{year}</p>
-                    <div className="grid gap-1">
-                      {availableMonths.filter((month) => month.startsWith(year)).map((month) => (
-                        <label key={month} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-accent">
-                          <Checkbox checked={selectedMonths.includes(month)} onCheckedChange={(checked) => toggleMonth(month, checked)} />
-                          <span>{monthLabel(month).split(" ")[0]}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </section>
-                )) : <p className="p-3 text-sm text-muted-foreground">Upload a statement to start your monthly view.</p>}
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between p-2.5">
-                <span className="text-xs text-muted-foreground">{selectedMonths.length} selected</span>
-                <Button variant="ghost" size="sm" onClick={() => { setMonths([]); setBank("all"); setCard("all"); }}>Clear</Button>
-              </div>
-            </PopoverContent>
-          </Popover>
+          <MonthSelect<string, true> multiple items={monthOptions} value={selectedMonths} onValueChange={changeMonths} placeholder="Select months">
+            <MonthSelectLabel className="sr-only">Statement months</MonthSelectLabel>
+            <div className="flex gap-2">
+              <MonthSelectTrigger aria-label="Statement months" className="flex h-10 min-w-0 flex-1 items-center justify-between rounded-md border bg-background px-3 text-left text-sm shadow-sm outline-none transition-colors hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring">
+                <span className="flex min-w-0 items-center gap-2 truncate"><CalendarDays aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+                  <MonthSelectValue>{(state) => state.placeholder ? "Select months" : state.labels.length === 1 ? state.label : `${state.labels.length} months`}</MonthSelectValue>
+                </span>
+                <ChevronDown aria-hidden="true" className="ml-2 size-4 shrink-0 text-muted-foreground" />
+              </MonthSelectTrigger>
+              <MonthSelectClear aria-label="Clear selected months" className="grid size-10 shrink-0 place-items-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <X aria-hidden="true" className="size-4" />
+              </MonthSelectClear>
+            </div>
+            <MonthSelectContent className="z-[100] max-h-80 w-72 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-lg outline-none">
+              {years.length ? years.map((year) => (
+                <MonthSelectGroup key={year} className="py-1">
+                  <MonthSelectGroupLabel className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">{year}</MonthSelectGroupLabel>
+                  <MonthSelectAll className="flex w-full cursor-pointer items-center justify-between rounded-sm px-2 py-1.5 text-xs text-muted-foreground outline-none hover:bg-accent focus:bg-accent">
+                    {(state) => <><span>{state.checked ? "Clear year" : "Select year"}</span>{state.checked ? <Check aria-hidden="true" className="size-3.5" /> : state.indeterminate ? <Minus aria-hidden="true" className="size-3.5" /> : null}</>}
+                  </MonthSelectAll>
+                  {availableMonths.filter((month) => month.startsWith(year)).map((month) => (
+                    <MonthSelectItem key={month} value={month} label={monthLabel(month)} className="flex cursor-pointer items-center justify-between rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent focus:bg-accent data-[highlighted]:bg-accent">
+                      <span>{monthLabel(month)}</span>
+                      <MonthSelectItemIndicator className="ml-3 text-foreground"><Check aria-hidden="true" className="size-4" /></MonthSelectItemIndicator>
+                    </MonthSelectItem>
+                  ))}
+                </MonthSelectGroup>
+              )) : <p className="px-3 py-5 text-sm text-muted-foreground">Upload a statement to start your monthly view.</p>}
+            </MonthSelectContent>
+          </MonthSelect>
         </div>
         <div className="grid w-full grid-cols-2 gap-3 sm:w-auto">
           <div className="space-y-1.5">

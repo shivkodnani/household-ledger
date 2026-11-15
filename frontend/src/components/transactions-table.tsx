@@ -12,7 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@ui-sdk/react/tooltip";
 
 function allocationBadge(allocation: string) {
   if (allocation === "Needs review") return <Badge variant="warning">Needs review</Badge>;
@@ -84,13 +84,9 @@ export function TransactionsTable({
               <TableCell>
                 <div className="flex items-center justify-end gap-1 opacity-75 transition-opacity group-hover:opacity-100">
                   {onSnapshot && item.statement_id && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button variant="ghost" size="icon" className="size-8" onClick={() => onSnapshot(item)} aria-label="View statement line snapshot">
-                          <Eye className="size-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>View source line</TooltipContent>
+                    <Tooltip delay={250}>
+                      <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-8" onClick={() => onSnapshot(item)} aria-label="View statement line snapshot"><Eye className="size-4" /></Button>} />
+                      <TooltipContent className="z-[110] rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md">View source line</TooltipContent>
                     </Tooltip>
                   )}
                   {onEdit && (

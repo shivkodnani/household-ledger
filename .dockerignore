@@ -1,8 +1,12 @@
 .git
 .vercel
+.agents
 .venv
 node_modules
 dist
+.next
+out
+skills-lock.json
 __pycache__
 *.py[cod]
 .env

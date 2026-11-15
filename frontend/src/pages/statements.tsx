@@ -99,7 +99,7 @@ export function StatementsPage() {
           {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2"><Label>Bank</Label><Select value={bank} onValueChange={setBank}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{banks.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></div>
-            <div className="space-y-2"><Label htmlFor="statement-card">Card label</Label><Input id="statement-card" value={cardName} onChange={(event) => setCardName(event.target.value)} placeholder="e.g. HSBC Cashback" /></div>
+            <div className="space-y-2"><Label htmlFor="statement-card">Card label</Label><Input id="statement-card" value={cardName} onChange={(event) => setCardName(event.target.value)} placeholder={bank === "ICICI" ? "e.g. ICICI Amazon Pay" : "e.g. HSBC Cashback"} /></div>
             <div className="space-y-2 sm:col-span-2"><Label htmlFor="statement-period">Statement month</Label><Input id="statement-period" type="month" required value={period} onChange={(event) => setPeriod(event.target.value)} /></div>
             <div className="space-y-2 sm:col-span-2"><Label htmlFor="statement-pdf">PDF file</Label><Input id="statement-pdf" type="file" accept="application/pdf,.pdf" required onChange={(event) => setFile(event.target.files?.[0] || null)} /><p className="text-xs text-muted-foreground">For hosted uploads, keep the PDF under 3 MB.</p></div>
           </div>

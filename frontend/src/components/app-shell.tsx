@@ -30,8 +30,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Spotlight } from "@/components/spotlight";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@ui-sdk/react/tooltip";
 
 const navItems = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
@@ -97,7 +97,7 @@ function Navigation({
                   : "text-muted-foreground hover:bg-accent/70 hover:text-foreground") +
                 (collapsed ? " justify-center px-0" : "")
               }
-              title={collapsed ? item.label : undefined}
+              aria-label={collapsed ? item.label : undefined}
             >
               <Icon className="size-[18px] shrink-0" strokeWidth={1.8} />
               {!collapsed && <span className="flex-1">{item.label}</span>}
@@ -108,9 +108,11 @@ function Navigation({
           );
           if (!collapsed) return link;
           return (
-            <Tooltip key={item.to}>
-              <TooltipTrigger asChild>{link}</TooltipTrigger>
-              <TooltipContent side="right">{item.label}{item.to === "/transactions" && reviewCount ? " · " + reviewCount + " to review" : ""}</TooltipContent>
+            <Tooltip key={item.to} delay={250}>
+              <TooltipTrigger render={link} />
+              <TooltipContent side="right" className="z-[110] rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md">
+                {item.label}{item.to === "/transactions" && reviewCount ? " · " + reviewCount + " to review" : ""}
+              </TooltipContent>
             </Tooltip>
           );
         })}
@@ -129,16 +131,16 @@ function Navigation({
                 (isActive ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/70 hover:text-foreground") +
                 (collapsed ? " justify-center px-0" : "")
               }
-              title={collapsed ? item.label : undefined}
+              aria-label={collapsed ? item.label : undefined}
             >
               <Icon className="size-[18px] shrink-0" strokeWidth={1.8} />
               {!collapsed && item.label}
             </NavLink>
           );
           return collapsed ? (
-            <Tooltip key={item.to}>
-              <TooltipTrigger asChild>{link}</TooltipTrigger>
-              <TooltipContent side="right">{item.label}</TooltipContent>
+            <Tooltip key={item.to} delay={250}>
+              <TooltipTrigger render={link} />
+              <TooltipContent side="right" className="z-[110] rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md">{item.label}</TooltipContent>
             </Tooltip>
           ) : link;
         })()}
@@ -207,8 +209,7 @@ export function AppShell() {
   }
 
   return (
-    <TooltipProvider delayDuration={250}>
-      <div className="min-h-svh bg-background">
+    <div className="min-h-svh bg-background">
         <aside className={"fixed inset-y-0 left-0 z-30 hidden border-r bg-background transition-[width] duration-200 md:flex md:flex-col " + (collapsed ? "w-[68px]" : "w-64")}>
           <Navigation collapsed={collapsed} />
           <div className="px-3 pb-3">
@@ -265,7 +266,6 @@ export function AppShell() {
           </main>
         </div>
         <Spotlight open={searchOpen} onOpenChange={setSearchOpen} />
-      </div>
-    </TooltipProvider>
+    </div>
   );
 }

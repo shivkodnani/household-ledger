@@ -446,7 +446,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+        script_sources = " ".join(getattr(self, "inline_script_hashes", ()))
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'" + (" " + script_sources if script_sources else "") + "; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
         if SECURE_COOKIES: self.send_header("Strict-Transport-Security", "max-age=31536000")
         super().end_headers()
     def send_json(self, obj, code=200, extra_headers=()):
@@ -523,19 +524,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length",str(len(body))); self.send_header("Cache-Control","no-cache")
         self.end_headers(); self.wfile.write(body)
     def send_frontend_file(self, relative_path):
-        frontend_root = (ROOT / "dist").resolve()
+        export_root = ROOT / "out"
+        frontend_root = (export_root if (export_root / "index.html").is_file() else ROOT / "dist").resolve()
         file_path = (frontend_root / relative_path).resolve()
         if file_path != frontend_root and frontend_root not in file_path.parents:
             return self.send_json({"error":"Not found"},404)
         if not file_path.is_file(): return self.send_json({"error":"Not found"},404)
         body = file_path.read_bytes(); content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        if content_type == "text/html":
+            inline_scripts = re.finditer(rb"<script\b(?![^>]*\bsrc=)[^>]*>(.*?)</script>", body, re.I | re.S)
+            self.inline_script_hashes = tuple("'sha256-" + base64.b64encode(hashlib.sha256(match.group(1)).digest()).decode() + "'" for match in inline_scripts)
         if content_type.startswith("text/") or content_type in ("application/javascript", "application/json", "image/svg+xml"):
             content_type += "; charset=utf-8"
         self.send_response(200); self.send_header("Content-Type",content_type)
         self.send_header("Content-Length",str(len(body)))
-        self.send_header("Cache-Control","public, max-age=31536000, immutable" if relative_path.startswith("assets/") else "no-cache")
+        static_asset = relative_path.startswith(("assets/", "_next/static/"))
+        self.send_header("Cache-Control","public, max-age=31536000, immutable" if static_asset else "no-cache")
         self.end_headers(); self.wfile.write(body)
-    def send_frontend_app(self):
+    def send_frontend_app(self, request_path="/"):
+        export_root = ROOT / "out"
+        if (export_root / "index.html").is_file():
+            route = request_path.strip("/")
+            if route == "index.html": route = ""
+            if route in {"", "login", "transactions", "statements", "merchants", "settings"}:
+                relative_path = f"{route}/index.html" if route else "index.html"
+                return self.send_frontend_file(relative_path)
+            return self.send_json({"error":"Not found"},404)
         return self.send_frontend_file("index.html")
     def send_login_page(self):
         return self.send_static("login.html","text/html; charset=utf-8")
@@ -953,10 +967,13 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path); path = u.path
         if path == "/healthz": return self.send_json({"ok":True})
         if not self.secure_proxy_request(): return self.send_json({"error":"HTTPS through the trusted proxy is required"},400)
-        if path.startswith("/assets/"):
+        if path.startswith(("/assets/", "/_next/")):
             return self.send_frontend_file(path.lstrip("/"))
-        if path in ("/", "/index.html", "/login", "/transactions", "/statements", "/merchants", "/settings"):
-            return self.send_frontend_app()
+        if (ROOT / "out" / path.lstrip("/")).is_file():
+            return self.send_frontend_file(path.lstrip("/"))
+        app_path = path.rstrip("/") or "/"
+        if app_path in ("/", "/index.html", "/login", "/transactions", "/statements", "/merchants", "/settings"):
+            return self.send_frontend_app(app_path)
         if path == "/api/cron/backup":
             expected=os.environ.get("CRON_SECRET", "") or os.environ.get("LEDGER_BACKUP_CRON_SECRET", "")
             supplied=self.headers.get("Authorization", "")

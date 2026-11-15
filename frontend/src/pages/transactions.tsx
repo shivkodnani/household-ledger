@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Check, Eye, FileText, LoaderCircle, PencilLine, Plus, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
+import { Check, ChevronDown, Eye, FileText, LoaderCircle, PencilLine, Plus, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { useLedger } from "@/lib/ledger";
 import type { Transaction } from "@/lib/types";
@@ -16,7 +16,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@ui-sdk/react/collapsible";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@ui-sdk/react/tooltip";
 
 type PreviousAllocation = { id: string; allocation: string; share_percent: number };
 const allocationOptions = ["Shared", "Wife personal", "Your personal", "Needs review"];
@@ -41,6 +42,7 @@ export function TransactionsPage() {
   const [edit, setEdit] = React.useState<Transaction | null>(null);
   const [addOpen, setAddOpen] = React.useState(false);
   const [snapshot, setSnapshot] = React.useState<Transaction | null>(null);
+  const [otherLinesOpen, setOtherLinesOpen] = React.useState(false);
 
   React.useEffect(() => {
     setSearch(params.get("search") || "");
@@ -60,8 +62,13 @@ export function TransactionsPage() {
   }), [transactions, status, kind, bank, statement, search]);
   const purchases = visible.filter((item) => item.kind === "Purchase");
   const otherLines = visible.filter((item) => item.kind !== "Purchase");
+  const focusedLineIsOther = visible.some((item) => item.id === params.get("focus") && item.kind !== "Purchase");
   const banks = [...new Set(transactions.map((item) => item.bank).filter(Boolean) as string[])].sort();
   const statementName = statements.find((row) => row.id === statement);
+
+  React.useEffect(() => {
+    if (focusedLineIsOther) setOtherLinesOpen(true);
+  }, [focusedLineIsOther]);
 
   React.useEffect(() => {
     const focusId = params.get("focus");
@@ -102,6 +109,12 @@ export function TransactionsPage() {
   function toggleAll(checked: boolean | "indeterminate") {
     setSelected(checked ? visible.map((item) => item.id) : []);
   }
+  function toggleGroup(items: Transaction[], checked: boolean | "indeterminate") {
+    const ids = new Set(items.map((item) => item.id));
+    setSelected((current) => checked
+      ? [...new Set([...current, ...ids])]
+      : current.filter((id) => !ids.has(id)));
+  }
   function toggleOne(id: string, checked: boolean | "indeterminate") {
     setSelected((current) => checked ? [...new Set([...current, id])] : current.filter((item) => item !== id));
   }
@@ -126,8 +139,8 @@ export function TransactionsPage() {
     finally { setBusy(false); }
   }
 
-  function renderRows(items: Transaction[]) {
-    if (!items.length) return <TableRow><TableCell colSpan={8} className="h-28 text-center text-muted-foreground">{loading ? "Loading transactions…" : "No line items match these filters."}</TableCell></TableRow>;
+  function renderRows(items: Transaction[], emptyText = "No line items match these filters.") {
+    if (!items.length) return <TableRow><TableCell colSpan={8} className="h-28 text-center text-muted-foreground">{loading ? "Loading transactions…" : emptyText}</TableCell></TableRow>;
     return items.map((item) => (
       <TableRow key={item.id} data-transaction-row={item.id} tabIndex={0} className="group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         <TableCell className="w-10"><Checkbox checked={selected.includes(item.id)} onCheckedChange={(checked) => toggleOne(item.id, checked)} aria-label={"Select " + (item.merchant || item.description)} /></TableCell>
@@ -137,7 +150,12 @@ export function TransactionsPage() {
           <div className="mt-1 flex flex-wrap gap-1">
             {item.currency && item.currency !== "INR" && <Badge variant="outline" className="h-5 text-[10px]">{item.original_amount} {item.currency}</Badge>}
             {item.ocr_amount_match === 0 && <Badge variant="destructive" className="h-5 text-[10px]">Check INR amount</Badge>}
-            {item.suggested_allocation && item.allocation === "Needs review" && <Tooltip><TooltipTrigger asChild><Badge variant="outline" className="h-5 cursor-help text-[10px]">Suggestion</Badge></TooltipTrigger><TooltipContent>{item.suggestion_reason || item.suggested_allocation}</TooltipContent></Tooltip>}
+            {item.suggested_allocation && item.allocation === "Needs review" && (
+              <Tooltip delay={250}>
+                <TooltipTrigger render={<button type="button" className="inline-flex cursor-help rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Badge variant="outline" className="h-5 text-[10px]">Suggestion</Badge></button>} />
+                <TooltipContent className="z-[110] max-w-xs rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md">{item.suggestion_reason || item.suggested_allocation}</TooltipContent>
+              </Tooltip>
+            )}
           </div>
         </TableCell>
         <TableCell className="whitespace-nowrap text-muted-foreground">{shortDate(item.date)}</TableCell>
@@ -153,7 +171,12 @@ export function TransactionsPage() {
         <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">{money(item.amount_inr)}</TableCell>
         <TableCell className="whitespace-nowrap text-right font-medium tabular-nums">{money(item.owed_inr)}</TableCell>
         <TableCell><div className="flex justify-end gap-1 opacity-80 group-hover:opacity-100">
-          {item.statement_id && item.source_bbox && <Button variant="ghost" size="icon" className="size-8" aria-label="View OCR source line" onClick={() => setSnapshot(item)}><Eye className="size-4" /></Button>}
+          {item.statement_id && item.source_bbox && (
+            <Tooltip delay={250}>
+              <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-8" aria-label="View OCR source line" onClick={() => setSnapshot(item)}><Eye className="size-4" /></Button>} />
+              <TooltipContent className="z-[110] rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md">View statement line snapshot</TooltipContent>
+            </Tooltip>
+          )}
           <Button variant="ghost" size="icon" className="size-8" aria-label="Edit transaction" onClick={() => setEdit(item)}><PencilLine className="size-4" /></Button>
         </div></TableCell>
       </TableRow>
@@ -181,12 +204,43 @@ export function TransactionsPage() {
     </div>}
     <Card className="overflow-hidden">
       <div className="overflow-x-auto">
-        <Table className="min-w-[1080px]"><TableHeader><TableRow><TableHead className="w-10"><Checkbox checked={visible.length > 0 && selected.length === visible.length} onCheckedChange={toggleAll} aria-label="Select all visible line items" /></TableHead><TableHead>Merchant / statement details</TableHead><TableHead>Date</TableHead><TableHead>Made by</TableHead><TableHead>Allocation</TableHead><TableHead className="text-right">Amount</TableHead><TableHead className="text-right">Wife owes</TableHead><TableHead className="w-20" /></TableRow></TableHeader>
-          <TableBody>
-            {renderRows(purchases)}
-            {otherLines.length > 0 && <TableRow className="bg-muted/40 hover:bg-muted/40"><TableCell colSpan={8} className="py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Other statement lines · refunds, payments, fees and interest</TableCell></TableRow>}
-            {renderRows(otherLines)}
-          </TableBody>
+        <Table className="min-w-[1080px]"><TableHeader><TableRow><TableHead className="w-10"><Checkbox checked={visible.length > 0 && visible.every((item) => selected.includes(item.id))} onCheckedChange={toggleAll} aria-label="Select all visible line items" /></TableHead><TableHead>Merchant / statement details</TableHead><TableHead>Date</TableHead><TableHead>Made by</TableHead><TableHead>Allocation</TableHead><TableHead className="text-right">Amount</TableHead><TableHead className="text-right">Wife owes</TableHead><TableHead className="w-20" /></TableRow></TableHeader>
+          <TableBody>{renderRows(purchases, otherLines.length ? "No purchase lines match these filters." : "No line items match these filters.")}</TableBody>
+          {otherLines.length > 0 && (
+            <Collapsible
+              render={<tbody className="[&_tr:last-child]:border-0" />}
+              open={otherLinesOpen}
+              onOpenChange={setOtherLinesOpen}
+              aria-label="Other statement lines"
+            >
+              <CollapsibleTrigger
+                aria-label="Toggle other statement lines"
+                render={(props) => (
+                  <TableRow className="bg-muted/40 hover:bg-muted/60">
+                    <TableCell colSpan={8} className="p-0">
+                      <button {...props} type="button" className="group flex min-h-12 w-full items-center gap-3 px-3 py-2.5 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                        <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[open]:rotate-180" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-medium">Other statement lines</span>
+                          <span className="block text-xs text-muted-foreground">Refunds, card payments, fees and adjustments · {otherLines.length} lines</span>
+                        </span>
+                        <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">Balance impact</span>
+                        <span className="shrink-0 font-medium tabular-nums">{money(otherLines.reduce((sum, item) => sum + Number(item.owed_inr || 0), 0))}</span>
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                )}
+              />
+              <CollapsiblePanel render={<TableRow className="border-0 hover:bg-transparent transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />}>
+                <TableCell colSpan={8} className="p-0">
+                  <Table className="min-w-[1080px] bg-background">
+                    <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-10"><Checkbox checked={otherLines.length > 0 && otherLines.every((item) => selected.includes(item.id)) ? true : otherLines.some((item) => selected.includes(item.id)) ? "indeterminate" : false} onCheckedChange={(checked) => toggleGroup(otherLines, checked)} aria-label="Select other statement lines" /></TableHead><TableHead>Merchant / statement details</TableHead><TableHead>Date</TableHead><TableHead>Made by</TableHead><TableHead>Allocation</TableHead><TableHead className="text-right">Amount</TableHead><TableHead className="text-right">Wife owes</TableHead><TableHead className="w-20" /></TableRow></TableHeader>
+                    <TableBody>{renderRows(otherLines)}</TableBody>
+                  </Table>
+                </TableCell>
+              </CollapsiblePanel>
+            </Collapsible>
+          )}
         </Table>
       </div>
     </Card>

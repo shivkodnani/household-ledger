@@ -5,15 +5,17 @@ A local-first web app for reviewing household card and manual expenses. The app 
 ## Run locally
 
 ```sh
-npm install
-npm run build
+corepack enable
+pnpm install
+pnpm build
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python app.py
 ```
+
 Open <http://127.0.0.1:8000>. The app binds to localhost by default. Its SQLite database and retained statement PDFs live in `data/`; keep that folder backed up. Do not expose this development server directly to the public internet.
 
-The browser interface is built with React and local shadcn/ui components using Radix primitives and Tailwind. To work on it with Vite hot reload, start the Python server in one terminal and run `npm run dev` in another, then open <http://127.0.0.1:5173>. The built frontend is served by the Python app on port 8000. For HSBC extraction, the machine also needs the `tesseract.js` Node dependency and Poppler's `pdftoppm` command. The English OCR model is included under `vendor/tessdata/`; OCR runs locally and the PDF is not sent to a service.
+The browser interface now runs as a React 19 app with Next.js. For local development, start the Python API with `.venv/bin/python app.py` in one terminal, then run `pnpm dev` in another and open <http://127.0.0.1:3000>. Next.js forwards `/api` and `/files` requests to the Python service. `pnpm build` creates a static Next.js export, which the Python app serves on port 8000. The earlier Vite workflow remains available through `pnpm dev:vite`, `pnpm build:vite`, and `pnpm preview:vite`. For HSBC extraction, the machine also needs the `tesseract.js` Node dependency and Poppler's `pdftoppm` command. The English OCR model is included under `vendor/tessdata/`; OCR runs locally and the PDF is not sent to a service.
 
 ## Current capabilities
 
