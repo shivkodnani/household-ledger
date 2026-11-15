@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 from http.cookies import SimpleCookie
 from concurrent.futures import ThreadPoolExecutor
 from hsbc_parser import extract_hsbc_pdf, _runtime_paths
+from icici_parser import extract_icici_pdf, get_icici_statement_password
 from merchant_search import merchant_alias_core, merchant_alias_key, search_parallel
 from database import connect as connect_database, hosted_database_enabled, schema_for_backend, table_column_names
 from file_store import (hosted_storage_enabled, local_statement_path, require_hosted_storage,
@@ -890,7 +891,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc: return self.send_json({"error":str(exc)},400)
     def send_snapshot(self, tid):
         with connect() as c:
-            row = c.execute("""SELECT t.id,t.source_page,t.source_bbox,t.statement_id,s.file_path
+            row = c.execute("""SELECT t.id,t.source_page,t.source_bbox,t.statement_id,s.file_path,s.bank
                               FROM transactions t LEFT JOIN statements s ON s.id=t.statement_id WHERE t.id=?""", (tid,)).fetchone()
         if not row or not row["statement_id"] or not row["source_page"] or not row["source_bbox"]:
             raise FileNotFoundError("No OCR line snapshot is available for this transaction")
@@ -902,9 +903,17 @@ class Handler(BaseHTTPRequestHandler):
             page_image = PAGE_CACHE / (statement_id + "-page-{:02d}.png".format(page))
             if not page_image.exists():
                 _, _, pdftoppm = _runtime_paths()
-                subprocess.run([pdftoppm, "-f", str(page), "-l", str(page), "-png", "-scale-to", "2400",
-                                str(local_statement_path(row["file_path"])), str(prefix)], check=True, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.PIPE, timeout=120)
+                render_command = [pdftoppm, "-f", str(page), "-l", str(page), "-png", "-scale-to", "2400"]
+                if str(row["bank"] or "").upper() == "ICICI":
+                    render_command.extend(["-upw", get_icici_statement_password()])
+                render_command.extend([str(local_statement_path(row["file_path"])), str(prefix)])
+                try:
+                    subprocess.run(render_command, check=True, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE, timeout=120)
+                except subprocess.CalledProcessError:
+                    raise RuntimeError("Could not render this statement snapshot. Check the server-side PDF password configuration.") from None
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError("The statement snapshot took too long to render.") from None
                 candidates = sorted(PAGE_CACHE.glob(prefix.name + "-*.png"))
                 if candidates:
                     rendered = candidates[-1]
@@ -1185,10 +1194,27 @@ class Handler(BaseHTTPRequestHandler):
                 month_match=re.findall(r"\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\w*\s+(20\d{2})",period.upper())
                 month_map={"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,"JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
                 statement_month=f"{month_match[-1][1]}-{month_map[month_match[-1][0]]:02d}" if month_match else ""
-                with connect() as c: c.execute("INSERT INTO statements(id,filename,bank,card_name,period,file_path,uploaded_at,extraction_status,transaction_count,statement_month) VALUES(?,?,?,?,?,?,?,?,?,?)",(sid,filename,bank,d.get("card_name",""),period,file_reference,datetime.datetime.now().isoformat(timespec="seconds"),"processing" if bank.upper()=="HSBC" else "manual",0,statement_month))
+                with connect() as c: c.execute("INSERT INTO statements(id,filename,bank,card_name,period,file_path,uploaded_at,extraction_status,transaction_count,statement_month) VALUES(?,?,?,?,?,?,?,?,?,?)",(sid,filename,bank,d.get("card_name", "") or ("Amazon Pay Credit Card" if bank.upper()=="ICICI" else ""),period,file_reference,datetime.datetime.now().isoformat(timespec="seconds"),"processing" if bank.upper() in ("HSBC", "ICICI") else "manual",0,statement_month))
                 if bank.upper()=="HSBC":
                     try:
                         items,pages,summary=extract_hsbc_pdf(extraction_pdf,period_hint=period)
+                        for item in items:
+                            item["statement_id"]=sid
+                            item["merchant_id"]=self.match_merchant(item.get("description", ""))
+                            self.save_transaction(item,False)
+                        count=len(items); status="ready" if count else "empty"
+                        extracted=round(sum(float(i["amount_inr"]) for i in items if i.get("kind")!="Card payment"),2)
+                        if summary.get("statement_month"):
+                            statement_month=summary["statement_month"]
+                        if not period and summary.get("statement_period"):
+                            period=summary["statement_period"]
+                        if not count: message="No transactions were recognized; the PDF is retained for manual entry."
+                    except Exception as e:
+                        with connect() as c: c.execute("DELETE FROM transactions WHERE statement_id=?",(sid,))
+                        status="error"; message=str(e)
+                elif bank.upper()=="ICICI":
+                    try:
+                        items,pages,summary=extract_icici_pdf(extraction_pdf,period_hint=period)
                         for item in items:
                             item["statement_id"]=sid
                             item["merchant_id"]=self.match_merchant(item.get("description", ""))
